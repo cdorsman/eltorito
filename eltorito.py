@@ -9,61 +9,86 @@ https://en.wikipedia.org/wiki/El_Torito_(CD-ROM_standard)
 import argparse
 import os
 import struct
+import sys
+import io
+import typing
 
 V_SECTOR_SIZE = 512
 SECTOR_SIZE = 2048
 
 
-def _get_sector(number, count, file_input):
+class DetailHandler():
+
+    def __init__(self, stdout: typing.TextIO = sys.stdout):
+        self._stdout = stdout
+
+    def set(self, key: str, value: object) -> None:
+        if self._stdout is not None:
+            self._stdout.write("- {key} -> {value}\n".format(key=key,
+                                                             value=value))
+        setattr(self, key, value)
+
+    def get(self, key: str) -> object:
+        return getattr(self, key)
+
+
+class ElToritoError(Exception):
+
+    def __init__(self, message: str):
+        self.message = message
+
+
+def _get_sector(number: int, count: int, handle: io.IOBase) -> bytes:
     """Get a sector."""
-    with open(file_input, 'rb') as f:
-        f.seek(number * SECTOR_SIZE, 0)
-        sector = f.read(V_SECTOR_SIZE * count)
-        if len(sector) != V_SECTOR_SIZE * count:
-            print("Invalid sector read")
-        return sector
+    handle.seek(number * SECTOR_SIZE, 0)
+    sector: bytes = handle.read(V_SECTOR_SIZE * count)
+    if len(sector) != V_SECTOR_SIZE * count:
+        raise ElToritoError("invalid sector read")
+    return sector
 
 
-def _extract(input_file, output_file):
+def extract(input_stream: io.IOBase, handler: DetailHandler) -> (bytes):
     """Extract image."""
-    sector = _get_sector(17, 1, input_file)
+    if input_stream is None or handler is None:
+        raise ElToritoError(
+            "invalid arguments for extraction, all inputs must be set")
+    sector = _get_sector(17, 1, input_stream)
     # we only need the first section of this segment
     segment = struct.unpack("<B5sB32s32sL", sector[0:75])
-    boot = segment[0]
-    iso = segment[1].decode("ascii")
-    vers = segment[2]
+    handler.set("iso", segment[1].decode("ascii"))
+    handler.set("vers", segment[2])
     spec = segment[3].decode("ascii").strip()
-    spec = "".join([x for x in spec if (x >= 'A' and x <= 'Z') or x == ' '])
+    handler.set(
+        "spec",
+        "".join([x for x in spec if (x >= 'A' and x <= 'Z') or x == ' ']))
     # 4 is unused
-    partition = segment[5]
-    if iso != "CD001" or spec.strip() != "EL TORITO SPECIFICATION":
-        print("This is not a bootable cd-image")
-        exit(1)
-    print("boot catalog starts at {}".format(partition))
-    sector = _get_sector(partition, 1, input_file)
+    handler.set("partition", segment[5])
+    if handler.get("iso") != "CD001" or str(
+            handler.get("spec")).strip() != "EL TORITO SPECIFICATION":
+        raise ElToritoError("this is not a bootable cd-image")
+    sector = _get_sector(int(str(handler.get("partition"))), 1, input_stream)
     segment = struct.unpack("<BBH24sHBB", sector[0:32])
     header = segment[0]
-    platform = segment[1]
+    handler.set("platform", segment[1])
     # skip 2
-    manufacturer = segment[3].decode("ascii")
+    handler.set("manufacturer", segment[3].decode("ascii"))
     # skip 4
     five = segment[5]
     aa = segment[6]
     if header != 1 or five != int("0x55", 16) or aa != int("0xaa", 16):
-        print("Invalid validation entry")
-        exit(1)
-    print("Manufacturer: {}".format(manufacturer))
+        raise ElToritoError("invalid validation entry")
     platform_string = "unknown"
+    platform = int(str(handler.get("platform")))
     if platform == 0:
         platform_string = "x86"
     elif platform == 1:
         platform_string = "PowerPC"
     elif platform == 2:
         platform_string = "Mac"
-    print("Image architecture: {}".format(platform_string))
+    handler.set("platform_string", platform_string)
     segment = struct.unpack("<BBHBBHLB", sector[32:45])
     boot = segment[0]
-    media = segment[1]
+    handler.set("media", segment[1])
     load = segment[2]
     sys = segment[3]
     # skip 4
@@ -71,25 +96,25 @@ def _extract(input_file, output_file):
     start = segment[6]
     # skip 7
     if boot != int("0x88", 16):
-        print("Boot indicator is not 0x88, not bootable")
-        exit(1)
+        raise ElToritoError("boot indicator is not 0x88, not bootable")
     media_type = "unknown"
     count = 0
+    media = int(str(handler.get("media")))
     if media == 0:
         media_type = "no emulation"
         count = 0
     elif media == 1:
         media_type = "1.2meg floppy"
-        count = 1200 * 1024 / V_SECTOR_SIZE
+        count = int(1200 * 1024 / V_SECTOR_SIZE)
     elif media == 2:
         media_type = "1.44meg floppy"
-        count = 1440 * 1024 / V_SECTOR_SIZE
+        count = int(1440 * 1024 / V_SECTOR_SIZE)
     elif media == 3:
         media_type = "2.88meg floppy"
-        count = 2880 * 1024 / V_SECTOR_SIZE
+        count = int(2880 * 1024 / V_SECTOR_SIZE)
     elif media == 4:
         media_type = "harddisk"
-        mbr = _get_sector(start, 1, input_file)
+        mbr = _get_sector(start, 1, input_stream)
         part = mbr[446:462]
         segment = struct.unpack("<8sLL", part)
         # skip 0
@@ -98,17 +123,14 @@ def _extract(input_file, output_file):
         count = first + size
     if count == 0:
         count = cnt
-    print("Boot media is: {}".format(media_type))
-    print("Starts at {} and has {} sectors (@ {} bytes)".format(start,
-                                                                count,
-                                                                V_SECTOR_SIZE))
-    image = _get_sector(start, count, input_file)
-    with open(output_file, 'wb') as f:
-        f.write(image)
-    print("Image written")
+    handler.set("media_type", media_type)
+    handler.set("sector_size", V_SECTOR_SIZE)
+    handler.set("sector_count", count)
+    handler.set("sector_start", start)
+    return _get_sector(start, count, input_stream)
 
 
-def main():
+def main() -> None:
     """Main entry."""
     parser = argparse.ArgumentParser("el torito image extraction")
     parser.add_argument("input", help="cd image to read")
@@ -120,7 +142,15 @@ def main():
     if os.path.exists(args.output):
         print("output file already exists {}".format(args.output))
         exit(1)
-    _extract(args.input, args.output)
+    try:
+        with open(args.input, "rb") as f:
+            b = extract(f, DetailHandler())
+            with open(args.output, "wb") as o:
+                o.write(b)
+        print("image written successfully")
+    except ElToritoError as e:
+        print("unable to extract image, eltorito format error")
+        print(e)
 
 
 if __name__ == "__main__":
