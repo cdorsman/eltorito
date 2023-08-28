@@ -16,20 +16,26 @@ import typing
 V_SECTOR_SIZE = 512
 SECTOR_SIZE = 2048
 
+DETAIL_TYPE = str | int
+
 
 class DetailHandler():
 
     def __init__(self, stdout: typing.TextIO = sys.stdout):
         self._stdout = stdout
+        self._store: typing.Dict[str, DETAIL_TYPE] = {}
 
-    def set(self, key: str, value: object) -> None:
+    def set(self, key: str, value: DETAIL_TYPE) -> None:
         if self._stdout is not None:
             self._stdout.write("  -> {key} -> {value}\n".format(key=key,
                                                                 value=value))
-        setattr(self, key, value)
+        self._store[key] = value
 
-    def get(self, key: str) -> object:
-        return getattr(self, key)
+    def get(self, key: str) -> DETAIL_TYPE:
+        return self._store[key]
+
+    def keys(self) -> list[str]:
+        return list(self._store.keys())
 
 
 class ElToritoError(Exception):
@@ -66,7 +72,7 @@ def extract(input_stream: io.IOBase, handler: DetailHandler) -> (bytes):
     if handler.get("iso") != "CD001" or str(
             handler.get("spec")).strip() != "EL TORITO SPECIFICATION":
         raise ElToritoError("this is not a bootable cd-image")
-    sector = _get_sector(int(str(handler.get("partition"))), 1, input_stream)
+    sector = _get_sector(int(handler.get("partition")), 1, input_stream)
     segment = struct.unpack("<BBH24sHBB", sector[0:32])
     header = segment[0]
     handler.set("platform", segment[1])
@@ -78,7 +84,7 @@ def extract(input_stream: io.IOBase, handler: DetailHandler) -> (bytes):
     if header != 1 or five != int("0x55", 16) or aa != int("0xaa", 16):
         raise ElToritoError("invalid validation entry")
     platform_string = "unknown"
-    platform = int(str(handler.get("platform")))
+    platform = int(handler.get("platform"))
     if platform == 0:
         platform_string = "x86"
     elif platform == 1:
@@ -99,7 +105,7 @@ def extract(input_stream: io.IOBase, handler: DetailHandler) -> (bytes):
         raise ElToritoError("boot indicator is not 0x88, not bootable")
     media_type = "unknown"
     count = 0
-    media = int(str(handler.get("media")))
+    media = int(handler.get("media"))
     if media == 0:
         media_type = "no emulation"
         count = 0
