@@ -24,8 +24,8 @@ class DetailHandler():
 
     def set(self, key: str, value: object) -> None:
         if self._stdout is not None:
-            self._stdout.write("- {key} -> {value}\n".format(key=key,
-                                                             value=value))
+            self._stdout.write("  -> {key} -> {value}\n".format(key=key,
+                                                                value=value))
         setattr(self, key, value)
 
     def get(self, key: str) -> object:
@@ -124,7 +124,8 @@ def extract(input_stream: io.IOBase, handler: DetailHandler) -> (bytes):
     if count == 0:
         count = cnt
     handler.set("media_type", media_type)
-    handler.set("sector_size", V_SECTOR_SIZE)
+    handler.set("v_sector_size", V_SECTOR_SIZE)
+    handler.set("sector_size", SECTOR_SIZE)
     handler.set("sector_count", count)
     handler.set("sector_start", start)
     return _get_sector(start, count, input_stream)
@@ -143,6 +144,7 @@ def main() -> None:
         print("output file already exists {}".format(args.output))
         exit(1)
     try:
+        print("beginning extraction")
         with open(args.input, "rb") as f:
             b = extract(f, DetailHandler())
             with open(args.output, "wb") as o:
